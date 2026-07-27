@@ -1,5 +1,5 @@
 [project]
-name = "DiffusionBlocks"
+name = "AutoregessiveDiffusionBlocks"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -15,6 +15,7 @@ dependencies = [
     "hf-transfer>=0.1.9",
     "scipy>=1.16.2",
     "flash-attn==2.7.4.post1",
+    "hydra-core"
 ]
 
 

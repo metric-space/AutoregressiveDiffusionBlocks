@@ -1,10 +1,13 @@
 import os
 from functools import partial
 
+import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms as T
 import lightning as L
 from datasets import load_dataset, DatasetDict
+
+from encoder import get_encoder
 
 
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
@@ -17,13 +20,49 @@ def transforms(examples, transform):
         "labels": examples["label"],
     }
 
+# How exactly is text data dealt with here?
+# tokenized here witn the tokenizer
+# in addition to the mask, details to help 
+class TextData(L.LightningDataModule):
+    def __init__(self):
+        super().__init__()
+        self.tokenizer = get_encoder()
+        self.pad_token = "<PAD>"
+        self.sample_texts = ["pizza with fox is the best"] #, "I came, I saw and I conquered", "Santa Claus is not real kids"]
+
+
+    def train_dataloader(self):
+        results = []
+        for seq in self.sample_texts:
+            results.append(self.tokenizer.encode(seq))
+        #max_len = max([len(i) for i in results])
+        #results2 = []
+
+        #def collate_fn(batch):
+        #    end_ = {"mask": [], "seq": []}
+        #    for item in batch:
+        #        for key_ in ["mask", "seq"]:
+        #            end_[key_].append(item[key_])
+        #    return end_
+        #        
+
+        #for i in results:
+        #    new_ = torch.zeros(max_len)
+        #    new_[:len(i)] = 1
+        #    results2.append({"mask": new_, "seq": i + (max_len - len(i))*[self.pad_token]})
+
+        def collate_fn(batch):
+            return batch
+
+        return DataLoader(results, batch_size=1, num_workers=1, pin_memory=True, drop_last=True, shuffle=True, collate_fn=collate_fn)
+
 
 class ImageDataModule(L.LightningDataModule):
     data_name = None
     image_size = None
     dataset_kwargs = {}
     mean = [0.5, 0.5, 0.5]
-    std = [0.5, 0.5, 0.5]
+    std = [0.5, 0.5, 0.5] 
 
     def __init__(
         self,
@@ -73,12 +112,12 @@ class ImageDataModule(L.LightningDataModule):
             partial(transforms, transform=self.train_transforms)
         )
         self.datasets["train"] = train_data
-        if self.val_key is not None:
-            val_data = data[self.val_key].with_transform(
+        if self.test_key is not None:
+            val_data = data[self.test_key].with_transform(
                 partial(transforms, transform=self.val_transforms)
             )
             self.datasets["val"] = val_data
-            self.val_dataloader = self._val_dataloader
+            self.val_dataloader = self._test_dataloader
         if self.test_key is not None:
             test_data = data[self.test_key].with_transform(
                 partial(transforms, transform=self.val_transforms)
@@ -201,3 +240,9 @@ def load_data(args):
         return TinyImageNetDataModule(**data_kwargs)
     else:
         raise ValueError(f"Invalid data name: {args.data_name}")
+
+if __name__ == '__main__':
+   a = TextData().train_dataloader()
+   print("hello")
+   for i in a:
+       print(i)
