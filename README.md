@@ -1,8 +1,12 @@
-# DiffusionBlocks (ICLR 2026)
+# AutoregressiveDiffusionBlocks (Fork of DiffusionBlocks ICLR 2026)
+
+🚧  UNDER CONSTRUCTION, INFERENCE IS BROKEN AND STILL IS A WORK IN PROGRESS
+
 
 <div align="center">
 <img alt="overview" src="./overview.jpg" title="overview">
 </div>
+
 
 > We propose ***DiffusionBlocks***, a principled framework that partitions transformers into independently trainable blocks, reducing memory requirements proportionally while maintaining competitive performance across diverse architectures and tasks.
 
