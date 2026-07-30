@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import lightning as L
 import torchmetrics
+from hydra.utils import instantiate
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from gpt2 import GPT2LMHeadModel, GPT2Config
@@ -147,6 +148,9 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
 
     
     def denoise(self, x, zt, sigma, block_idx=None, inference_mode=False):
+        seq_device = x["seqs"].device if isinstance(x, dict) else x.device
+        sigma = sigma.to(seq_device)
+        zt = zt.to(seq_device)
         if block_idx is None:
             block_idx = self.estimate_target_layer(sigma)
         if self.class_dropout_prob > 0.0 and self.training:
@@ -177,7 +181,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
                 x,
                 layer_indices=self.layer_assignment[block_idx],
                 timesteps=c_noise,
-                sigma_stuff = (c_out.to(device), zt.to(device), c_skip.to(device)),
+                sigma_stuff=(c_out, zt, c_skip),
                 inference_mode=inference_mode
         )
         logits, _ = outputs
@@ -193,6 +197,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
         return {}
 
     def shared_step(self, batch, step="train", return_metrics=False, **kwargs):
+        model_device = next(self.model.parameters()).device
 
         # NOTE: make masks here
         processed_batch = []
@@ -208,7 +213,9 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
 
         max_len = max([len(i) for i in batch])
 
-        sigmas = self.get_sigmas(self.current_training_block, len(batch))
+        sigmas = self.get_sigmas(self.current_training_block, len(batch)).to(
+            model_device
+        )
 
         zt = []
         
@@ -223,38 +230,46 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
              print(f"Input: {text_decoder.decode(original_seq)}")
 
              noised_values = original_seq[1:]
-             labels.append(torch.tensor([50256] + original_seq[:-1]))
+             labels.append(
+                 torch.tensor([50256] + original_seq[:-1], device=model_device)
+             )
 
-             noised = self.model.transformer.get_embeddings(torch.tensor(noised_values).to(device)) # output shape is [Seq, embed_dim]
+             noised = self.model.transformer.get_embeddings(
+                 torch.tensor(noised_values, device=model_device)
+             ) # output shape is [Seq, embed_dim]
 
 
              original_len = len(original_seq)
 
              # NOTE We want to make sure zt_ if of seq length = original (zeroed) + noised
 
-             zt_ = sigmas[index, None].to(device) * torch.randn_like(noised).to(device)
+             zt_ = sigmas[index, None] * torch.randn_like(noised)
              noised = zt_ + self.model.transformer.add_position_embeddings(noised, offset=1)
 
-             zt.append(torch.cat([torch.zeros(original_len, noised.shape[-1]), zt_], dim=0))
+             zt.append(
+                 torch.cat([noised.new_zeros(original_len, noised.shape[-1]), zt_], dim=0)
+             )
 
-             original = self.model.transformer.get_embeddings(torch.tensor(original_seq).to(device))
+             original = self.model.transformer.get_embeddings(
+                 torch.tensor(original_seq, device=model_device)
+             )
              original = self.model.transformer.add_position_embeddings(original)
 
              # make masks here
              # we need to pad to same length here
-             complete_mask = torch.zeros(2*max_len - 1)
+             complete_mask = torch.zeros(2*max_len - 1, device=model_device)
              complete_mask[:(2*original_len-1)] = 1
 
              # doubles as noise_mask
              loss_mask = torch.clone(complete_mask).detach()
              loss_mask[1:original_len] = 0 
 
-             original_mask = torch.zeros(2*max_len - 1)
+             original_mask = torch.zeros(2*max_len - 1, device=model_device)
              original_mask[:original_len] = 1
 
              # QUESTION: why am I padding here instead of outside the loop?
 
-             padded_seq_ = torch.zeros((2*max_len - 1), 768) # TODO: don't hard code this
+             padded_seq_ = original.new_zeros((2*max_len - 1), original.shape[-1])
              padded_seq_[:(2*original_len -1)] = torch.cat([original, noised], axis=0)
 
              # final_mask for loss calculation
@@ -262,7 +277,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
              processed_batch.append({"original_mask": original_mask, "seqs": padded_seq_, "loss_mask": loss_mask, "complete_mask": complete_mask})
 
         labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True)
-        zt =   torch.nn.utils.rnn.pad_sequence(zt, batch_first=True).to(device)
+        zt = torch.nn.utils.rnn.pad_sequence(zt, batch_first=True)
 
 
         block_idx = self.estimate_target_layer(sigmas)
@@ -292,7 +307,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
             v_ = torch.stack([x[key_] for x in processed_batch], axis=0)
             print(f"{key_ } {v_.shape}")
             #assert v_[0].ndim == 3
-            collated_processed_batch[key_] = v_.to(device)
+            collated_processed_batch[key_] = v_
 
         logits = self.denoise(collated_processed_batch, zt, sigmas, block_idx, inference_mode=False)
 
@@ -328,7 +343,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
         print("loss shape is: ", loss.shape)
         #loss = loss.reshape(-1, loss.size()[-1])
         ce_loss = loss.mean()
-        w = self.get_weights(sigmas)[:, None].to(device)
+        w = self.get_weights(sigmas)[:, None]
         loss = loss.mean() # (loss * w).mean()
 
         print(f"LOSS STATEMENT {block_idx} {loss}")
@@ -348,12 +363,10 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
             lr=self.args.lr,
             weight_decay=self.args.weight_decay,
         )
-        scheduler = get_scheduler(
-            name=self.args.scheduler_type,
+        scheduler = instantiate(
+            self.args.scheduler,
             optimizer=optimizer,
-            num_warmup_steps=self.args.num_warmup_steps,
-            num_training_steps=self.trainer.estimated_stepping_batches,
-            scheduler_specific_kwargs=self.args.scheduler_specific_kwargs,
+            T_max=self.trainer.estimated_stepping_batches,
         )
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
 
@@ -375,11 +388,18 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
 
         # x is input embeddings
         x = original["seqs"]
+        x_device = x.device
         #x = self.model.transformer.add_position_embeddings(x)
         bsz = x.shape[0]
         slen = original["loss_mask"].sum().item()
         hidden_size = self.model.config.n_embd
-        z = torch.randn(bsz, (slen-1), hidden_size, device=self.device)
+        z = torch.randn(
+            bsz,
+            (slen - 1),
+            hidden_size,
+            device=x_device,
+            dtype=x.dtype,
+        )
         #z = self.model.transformer.add_position_embeddings(z, offset = 1)
         z *= torch.sqrt(1.0 + self.sigmas[0] ** 2.0)
         s_in = x.new_ones([bsz])
@@ -388,7 +408,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
 
         for i in range(self.sigmas.shape[0] - 1):
             print("Diffusion step called", x.shape, z.shape)
-            original["seqs"] = torch.cat([x, z], dim=1).to(device) 
+            original["seqs"] = torch.cat([x, z], dim=1)
             original["seqs"] = self.model.transformer.add_position_embeddings(original["seqs"])
             sigma = self.sigmas[i] * s_in
             next_sigma = self.sigmas[i + 1] * s_in
@@ -414,7 +434,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
         min_sigma = self.sigmas[-1].item()
         original["seqs"] = torch.cat([x, z], dim=1) 
         original["seqs"] = self.model.transformer.add_position_embeddings(original["seqs"])
-        sigmas = torch.full((x.shape[0],), min_sigma, device=self.device)
+        sigmas = torch.full((x.shape[0],), min_sigma, device=x_device, dtype=x.dtype)
         logits = self.denoise(original,  torch.cat([torch.zeros_like(x),z],dim=1), sigmas, inference_mode=inference_mode)[:, -(slen - 1):, :]
         probs = F.softmax(logits, dim=-1)
         return probs @ self.model.transformer.wte.weight# return logits
@@ -422,6 +442,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
 
     def generate(self, sentence, num_new_tokens, temperature=1.0):
         tokenizer = get_encoder()
+        model_device = next(self.model.parameters()).device
         tokenized_words = tokenizer.encode(sentence)
         #tokenized_words = [50256]
         print(tokenized_words)
@@ -432,10 +453,14 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
 
         for _ in range(num_new_tokens):
 
-            original = torch.tensor(tokenized_words).to(device)
-            original = self.model.transformer.get_embeddings(original).to(device)
+            original = torch.tensor(tokenized_words, device=model_device)
+            original = self.model.transformer.get_embeddings(original)
             w_ = len(tokenized_words)
-            input_ = {"seqs": original.to(device)[None,...], "original_mask": torch.tensor([w_*[1]+[0]]).to(device), "loss_mask": torch.tensor([[1]+(w_-1)*[0]+[1]]).to(device)}
+            input_ = {
+                "seqs": original[None,...],
+                "original_mask": torch.tensor([w_*[1]+[0]], device=original.device),
+                "loss_mask": torch.tensor([[1]+(w_-1)*[0]+[1]], device=original.device),
+            }
 
             logits = self.diffusion_step(input_, inference_mode=True)
 
@@ -467,6 +492,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
 
     def training_akin_generate(self, sentence, num_new_tokens, temperature=1.0):
         tokenizer = get_encoder()
+        model_device = next(self.model.parameters()).device
         tokenized_words = tokenizer.encode(sentence)
         #tokenized_words = [50256]
         print(tokenized_words)
@@ -477,11 +503,21 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
 
         for _ in range(num_new_tokens):
 
-            original = torch.tensor(tokenized_words).to(device)
-            original = self.model.transformer.get_embeddings(original).to(device)
+            original = torch.tensor(tokenized_words, device=model_device)
+            original = self.model.transformer.get_embeddings(original)
             w_ = len(tokenized_words)
             print(f"Length of tokenized inference input is : {w_}")
-            input_ = {"seqs": original.to(device)[None,...], "original_mask": torch.tensor([w_*[1]+(w_ - 1 + num_new_tokens)*[0]]).to(device), "loss_mask": torch.tensor([[1] + (w_ - 1)*[0]+ (w_ - 1 + num_new_tokens)*[1]]).to(device)}
+            input_ = {
+                "seqs": original[None,...],
+                "original_mask": torch.tensor(
+                    [w_*[1]+(w_ - 1 + num_new_tokens)*[0]],
+                    device=original.device,
+                ),
+                "loss_mask": torch.tensor(
+                    [[1] + (w_ - 1)*[0]+ (w_ - 1 + num_new_tokens)*[1]],
+                    device=original.device,
+                ),
+            }
 
             logits = self.diffusion_step(input_, inference_mode=False)
 
@@ -516,6 +552,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
 
     def counterfactual_generate(self, sentence, temperature=1.0):
         tokenizer = get_encoder()
+        model_device = next(self.model.parameters()).device
         tokenized_words = tokenizer.encode(sentence)
         print(tokenized_words)
 
@@ -525,9 +562,15 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
 
         old_logits = None
 
-        original = self.model.transformer.get_embeddings(torch.tensor(tokenized_words).to(device))
+        original = self.model.transformer.get_embeddings(
+            torch.tensor(tokenized_words, device=model_device)
+        )
         w_ = len(tokenized_words)
-        input_ = {"seqs": original.to(device), "original_mask": torch.tensor([w_*[1]+[0]]).to(device), "loss_mask": torch.tensor([w_*[0]+[1]]).to(device)}
+        input_ = {
+            "seqs": original,
+            "original_mask": torch.tensor([w_*[1]+[0]], device=original.device),
+            "loss_mask": torch.tensor([w_*[0]+[1]], device=original.device),
+        }
 
         original_logits = self.diffusion_step(input_)
 
@@ -544,10 +587,16 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
 
             tokenized_words = tokenizer.encode(sentence + word)
             
-            original = self.model.transformer.get_embeddings(torch.tensor(tokenized_words).to(device))
+            original = self.model.transformer.get_embeddings(
+                torch.tensor(tokenized_words, device=model_device)
+            )
             w_ = len(tokenized_words)
             print(w_)
-            input_ = {"seqs": original.to(device), "original_mask": torch.tensor([w_*[1]+w_*[0]]).to(device), "loss_mask": torch.tensor([(w_*[0]+w_*[1])]).to(device)}
+            input_ = {
+                "seqs": original,
+                "original_mask": torch.tensor([w_*[1]+w_*[0]], device=original.device),
+                "loss_mask": torch.tensor([(w_*[0]+w_*[1])], device=original.device),
+            }
 
             logits = self.diffusion_step(input_)
 

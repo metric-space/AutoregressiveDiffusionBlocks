@@ -186,7 +186,7 @@ class Attention(nn.Module):
         if self.scale:
             w = w / math.sqrt(v.size(-1))
         nd, ns = w.size(-2), w.size(-1)
-        b = masks[:,None,:,:].to(device) #self.bias[:, :, ns-nd:ns, :ns]
+        b = masks[:,None,:,:].to(device=w.device, dtype=w.dtype) #self.bias[:, :, ns-nd:ns, :ns]
         b = b.expand_as(w)
         #print(b)
         w = w * b - 1e20 * (1 - b)
@@ -219,12 +219,14 @@ class Attention(nn.Module):
         #print(noise_mask)
 
         mask_dim_ =  original_mask.shape[-1]
-        mask = torch.zeros(mask_dim_, mask_dim_)
+        mask = original_mask.new_zeros(mask_dim_, mask_dim_)
 
         if inference_mode:
             print("Inference mode mask")
-            mask = torch.zeros(mask_dim_, mask_dim_)
-            mask[1:,1:] = torch.tril(torch.ones(mask_dim_ - 1, mask_dim_ - 1))
+            mask = original_mask.new_zeros(mask_dim_, mask_dim_)
+            mask[1:,1:] = torch.tril(
+                original_mask.new_ones(mask_dim_ - 1, mask_dim_ - 1)
+            )
             #print(mask)
             return mask
 
@@ -240,7 +242,9 @@ class Attention(nn.Module):
 		#    torch.ones(i, i, dtype=torch.bool)
 		#)
 
-        mask[i+1:i+1+ni, :ni-1] = torch.tril(torch.ones(ni-1,ni-1, dtype=torch.bool))
+        mask[i+1:i+1+ni, :ni-1] = torch.tril(
+            original_mask.new_ones(ni - 1, ni - 1)
+        )
 
         for z in range(num_noisy):
 
@@ -469,7 +473,7 @@ class GPT2LMHeadModel(nn.Module):
 
     # labels = [hello world], [hello world <noisy world>]
     def forward(self, embeds, timesteps, layer_indices, position_ids=None, token_type_ids=None, lm_labels=None, past=None, sigma_stuff=None, inference_mode=False):
-        conditioning = F.silu(self.time_embedder(timesteps.to(device)))
+        conditioning = F.silu(self.time_embedder(timesteps.to(embeds["seqs"].device)))
         outputs, presents = self.transformer(embeds, layer_indices, None, None, None, conditioning=conditioning, inference_mode=inference_mode)
         #hidden_states = torch.nn.utils.rnn.pad_sequence([x[y.bool()] for (x,y) in zip(outputs["seqs"],outputs["loss_mask"])], batch_first=True)
         #hidden_states = outputs["seqs"][outputs["loss_mask"].bool()]
