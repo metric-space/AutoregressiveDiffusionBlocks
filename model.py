@@ -142,7 +142,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
         block_idx = torch.clamp(block_idx, 0, self.args.num_blocks - 1).long()
         values, counts = block_idx.unique(return_counts=True)
         block_idx = values[counts.argmax()].item()
-        if block_idx in self.alternative.keys():
+        if self.alternative is not None and block_idx in self.alternative.keys():
             return self.alternative[block_idx]
         return block_idx
 
