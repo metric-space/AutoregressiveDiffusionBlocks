@@ -7,7 +7,8 @@ from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 from lightning.pytorch.strategies import DDPStrategy
 
 from data import load_data, TextData
-from model import ViTDBlockExperimentModel, normalize_transition_schedule, TransformerBlockModel
+from model import TransformerBlockModel
+from gpt2 import normalize_transition_schedule
 
 import hydra
 from omegaconf import DictConfig

@@ -87,6 +87,7 @@ def pad_sequences(seqs, pad_value):
     return padded, lengths
 
 
+# TODO: this should be moved somewhere else
 def normalize_transition_schedule(transition):
     if transition is None:
         return None
