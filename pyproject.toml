@@ -9,12 +9,10 @@ dependencies = [
     "torchvision==0.21.0",
     "lightning==2.5.0",
     "wandb==0.18.6",
-    "transformers==4.52.4",
     "datasets==3.5.0",
     "huggingface-hub[hf-xet]>=0.31.2",
     "hf-transfer>=0.1.9",
     "scipy>=1.16.2",
-    "flash-attn==2.7.4.post1",
     "hydra-core"
 ]
 
@@ -31,3 +29,7 @@ torch = [
 torchvision = [
     { index = "pytorch-cu124", marker = "sys_platform == 'linux'"}
 ]
+
+[dependency-groups]
+dev = [ "pytest" ]
+lint = [ "ruff" ]
