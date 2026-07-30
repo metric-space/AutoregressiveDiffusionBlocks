@@ -44,7 +44,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
         self.save_hyperparameters(args)
         self.alternative = args.alternative
 
-        self.transition = normalize_transition_schedule(args.get("transition", None))
+        self.transition = args.get("transition", None)
         print(self.transition)
         if self.transition is not None:
             for block_idx, _ in self.transition:
