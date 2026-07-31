@@ -196,6 +196,49 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
     def get_model_kwargs(self, batch):
         return {}
 
+
+    def generate_inputs(self, original_seq, sigma=0.0, device="cpu"):
+
+        original = self.model.transformer.get_embeddings(torch.tensor(original_seq, device=device))
+        # NOTE: important bit
+        original = self.model.transformer.add_position_embeddings(original)
+
+        noised = torch.tensor(original_seq[1:], device=device)
+        label  = torch.clone(noised)
+        noised = self.model.transformer.get_embeddings(noised)
+
+        noise = sigma * torch.randn_like(noised)
+        # NOTE: important bit
+        noised = noise + self.model.transformer.add_position_embeddings(noised, offset=1)
+
+        input_ = torch.cat([original, noised], axis=0)
+        noise  = torch.cat([torch.zeros(len(original_seq), noised.shape[-1], device=device), noise], dim=0)
+
+        return {
+                "label":    label,    # [1,seq]
+                "noise":    noise,    # [1, seq, hidden_dim]
+                "input":    input_,   # [1, seq, hidden_dim]
+                "original": original, # for debugging otherwise useless
+                "noised":   noised,    # fo debugging, otherwise useless
+                }
+
+    def generate_input_masks(self, seq, noised, device="cpu"):
+        # make masks here
+
+        seq_length = seq.shape[0]
+        noised_length = noised.shape[0]
+
+        # doubles as noise_mask
+        loss_mask = torch.ones(seq_length + noised_length, device=device)
+        loss_mask[:seq_length] = 0
+
+        original_mask = torch.zeros(seq_length + noised_length, device=device)
+        original_mask[:seq_length] = 1
+
+        return {"original_mask" : original_mask,
+                "loss_mask"     : loss_mask}
+
+
     def shared_step(self, batch, step="train", return_metrics=False, **kwargs):
         model_device = next(self.model.parameters()).device
 
@@ -211,78 +254,33 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
         #    return end_
         #        
 
-        max_len = max([len(i) for i in batch])
 
         sigmas = self.get_sigmas(self.current_training_block, len(batch)).to(
             model_device
         )
 
         zt = []
-        
 
-        # TODO: zip maybe better
+        # TODO: zip maybee better
         #
-        # [  !    start   x2   x3]
-        # [ start n2      n3   n4] 
         for index, original_seq in enumerate(batch):
             # embedding
 
              print(f"Input: {text_decoder.decode(original_seq)}")
 
-             noised_values = original_seq[1:]
-             labels.append(
-                 torch.tensor([50256] + original_seq[:-1], device=model_device)
-             )
+             inputs = self.generate_inputs(original_seq, sigma=sigmas[index], device=model_device)
 
-             noised = self.model.transformer.get_embeddings(
-                 torch.tensor(noised_values, device=model_device)
-             ) # output shape is [Seq, embed_dim]
+             # NOTE: maybe we don't need this line
+             zt.append(inputs["noise"])
 
+             masks = self.generate_input_masks(inputs["original"], inputs["noised"], device=model_device)
 
-             original_len = len(original_seq)
-
-             # NOTE We want to make sure zt_ if of seq length = original (zeroed) + noised
-
-             zt_ = sigmas[index, None] * torch.randn_like(noised)
-             noised = zt_ + self.model.transformer.add_position_embeddings(noised, offset=1)
-
-             zt.append(
-                 torch.cat([noised.new_zeros(original_len, noised.shape[-1]), zt_], dim=0)
-             )
-
-             original = self.model.transformer.get_embeddings(
-                 torch.tensor(original_seq, device=model_device)
-             )
-             original = self.model.transformer.add_position_embeddings(original)
-
-             # make masks here
-             # we need to pad to same length here
-             complete_mask = torch.zeros(2*max_len - 1, device=model_device)
-             complete_mask[:(2*original_len-1)] = 1
-
-             # doubles as noise_mask
-             loss_mask = torch.clone(complete_mask).detach()
-             loss_mask[1:original_len] = 0 
-
-             original_mask = torch.zeros(2*max_len - 1, device=model_device)
-             original_mask[:original_len] = 1
-
-             # QUESTION: why am I padding here instead of outside the loop?
-
-             padded_seq_ = original.new_zeros((2*max_len - 1), original.shape[-1])
-             padded_seq_[:(2*original_len -1)] = torch.cat([original, noised], axis=0)
-
-             # final_mask for loss calculation
-             # complete_mask
-             processed_batch.append({"original_mask": original_mask, "seqs": padded_seq_, "loss_mask": loss_mask, "complete_mask": complete_mask})
-
-        labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True)
-        zt = torch.nn.utils.rnn.pad_sequence(zt, batch_first=True)
-
+             processed_batch.append(masks | inputs)
 
         block_idx = self.estimate_target_layer(sigmas)
-        
 
+        print(f"Processed batch: {processed_batch}")
+        
         #if return_metrics:
         #    logits = self.diffusion_step(pixel_values)
         #    if step == "val":
@@ -298,19 +296,24 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
 
         # z = self.get_embeds(labels, is_input=True)
 
-        print(zt.shape)
-
-
-        # ---------- experiemental ----------------------------------------
+        # ---------- experimental ----------------------------------------
         collated_processed_batch = {}
-        for key_ in ["original_mask", "seqs", "loss_mask", "complete_mask"]:
-            v_ = torch.stack([x[key_] for x in processed_batch], axis=0)
+        for key_ in processed_batch[0].keys(): # come back here and reduce keys
+            v_ = torch.nn.utils.rnn.pad_sequence([kv[key_] for kv in processed_batch], batch_first=True)
             print(f"{key_ } {v_.shape}")
             #assert v_[0].ndim == 3
             collated_processed_batch[key_] = v_
 
-        logits = self.denoise(collated_processed_batch, zt, sigmas, block_idx, inference_mode=False)
+        labels = collated_processed_batch["label"]
+        del collated_processed_batch["label"]
 
+        zt = collated_processed_batch["noise"]
+        del collated_processed_batch["noise"]
+
+        # rename keys here
+        collated_processed_batch["seqs"] = collated_processed_batch.pop("input")
+
+        logits = self.denoise(collated_processed_batch, zt, sigmas, block_idx, inference_mode=False)
 
         # ================ Debugging process =============================
 
@@ -549,6 +552,36 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
 
 
         return tokenized_words
+
+    def sigma_sweep(self):
+
+        sigmas = torch.arange(1.0, 80.0, 2.5)
+
+        tokenizer = get_encoder()
+        model_device = next(self.model.parameters()).device
+        tokenized_words = tokenizer.encode(sentence)
+        #tokenized_words = [50256]
+        print(tokenized_words)
+
+        list_of_words = sentence.split(" ")
+
+        original = torch.tensor(tokenized_words, device=model_device)
+        original = self.model.transformer.get_embeddings(original)
+
+        for sigma in range(sigmas):
+            
+            w_ = len(tokenized_words)
+            input_ = {
+                "seqs": original[None,...],
+                "original_mask": torch.tensor([w_*[1]+(w_ - 1)*[0]], device=original.device),
+                "loss_mask": torch.tensor([w_*[0]+(w_ - 1)*[1]], device=original.device),
+            }
+
+            logits = self.diffusion_step(input_, inference_mode=False)
+
+            print(torch.argmax(logits, dim=-1).shape)
+
+        pass
 
     def counterfactual_generate(self, sentence, temperature=1.0):
         tokenizer = get_encoder()

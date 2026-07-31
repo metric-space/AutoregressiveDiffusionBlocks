@@ -202,26 +202,23 @@ class Attention(nn.Module):
     # single not batched
     def derive_masks(self, original_mask, noise_mask, inference_mode=False):
 
-        #print(original_mask)
-        #print(noise_mask)
+        print(original_mask)
+        print(noise_mask)
 
         mask_dim_ =  original_mask.shape[-1]
         mask = original_mask.new_zeros(mask_dim_, mask_dim_)
 
         if inference_mode:
             print("Inference mode mask")
-            mask = original_mask.new_zeros(mask_dim_, mask_dim_)
-            mask[1:,1:] = torch.tril(
-                original_mask.new_ones(mask_dim_ - 1, mask_dim_ - 1)
+            return torch.tril(
+                original_mask.new_ones(mask_dim_, mask_dim_)
             )
-            #print(mask)
-            return mask
 
         i = int(original_mask.sum())
         print(f"i IS {i}")
-        ni = int(noise_mask.sum()) - 1
+        ni = int(noise_mask.sum())
 
-        num_noisy = int(noise_mask.sum()) - 1
+        num_noisy = int(noise_mask.sum())
 
         # steps:
         #mask[0:i,0] = True
@@ -229,19 +226,19 @@ class Attention(nn.Module):
 		#    torch.ones(i, i, dtype=torch.bool)
 		#)
 
-        mask[i+1:i+1+ni, :ni-1] = torch.tril(
-            original_mask.new_ones(ni - 1, ni - 1)
+        mask[i:i+ni, :ni] = torch.tril(
+            original_mask.new_ones(ni, ni)
         )
 
         for z in range(num_noisy):
 
             noisy_position = i + z
             #mask[noisy_position, : z] = True
-            #mask[noisy_position, 1 + z] = False
+            mask[noisy_position, 1 + z] = False
             mask[noisy_position, noisy_position] = True
 
         print("training mode mask")
-        #print(mask)
+        print(mask)
 
         return mask
 
