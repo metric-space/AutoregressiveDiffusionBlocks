@@ -38,7 +38,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
         self.num_layers = args.num_layers
         self.register_buffer(
             "sigmas",
-            get_discrete_sigmas(num_steps=self.num_inference_steps, dblock=True).to(
+            get_discrete_sigmas(num_steps=4, dblock=True).to(
                 self.device
             ),
         )
@@ -239,8 +239,21 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
                 "loss_mask"     : loss_mask}
 
 
+    def collate(self, list_of_dicts):
+        collated_processed_batch = {}
+        for key_ in list_of_dicts[0].keys(): # come back here and reduce keys
+            v_ = torch.nn.utils.rnn.pad_sequence([kv[key_] for kv in list_of_dicts], batch_first=True)
+            print(f"{key_ } {v_.shape}")
+            #assert v_[0].ndim == 3
+            collated_processed_batch[key_] = v_
+
+        return collated_processed_batch
+
+
     def shared_step(self, batch, step="train", return_metrics=False, **kwargs):
         model_device = next(self.model.parameters()).device
+
+        batch = 10*batch
 
         # NOTE: make masks here
         processed_batch = []
@@ -297,12 +310,9 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
         # z = self.get_embeds(labels, is_input=True)
 
         # ---------- experimental ----------------------------------------
-        collated_processed_batch = {}
-        for key_ in processed_batch[0].keys(): # come back here and reduce keys
-            v_ = torch.nn.utils.rnn.pad_sequence([kv[key_] for kv in processed_batch], batch_first=True)
-            print(f"{key_ } {v_.shape}")
-            #assert v_[0].ndim == 3
-            collated_processed_batch[key_] = v_
+
+        collated_processed_batch = self.collate(processed_batch)
+        
 
         labels = collated_processed_batch["label"]
         del collated_processed_batch["label"]
@@ -323,11 +333,13 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
 
         logits = logits[collated_processed_batch["loss_mask"].bool()] # should be [seq, hidden_dim]
 
+        print(logits.shape)
+
         predicted_token_ids = torch.argmax(logits, dim=-1)
 
-        print("DEBUG: what is being mapped: ")
-        for i in range(len(predicted_token_ids)):
-            print(i, text_decoder.decode([predicted_token_ids[i].item()]), "->", text_decoder.decode([labels[0,i].item()]))
+        #print(f"DEBUG: what is being mapped: {sigmas}")
+        #for i in range(len(predicted_token_ids)):
+        #    print(i, text_decoder.decode([predicted_token_ids[i].item()]), "->", text_decoder.decode([labels[0,i].item()]))
 
         
         #for i in range(predicted_token_ids.shape[0]):
@@ -339,7 +351,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
 
 
         loss = F.cross_entropy(
-                logits.view(-1, 50257), labels[0],
+                logits.view(-1, 50257), labels.view(-1),
                 reduction='none'
         )
 
@@ -408,19 +420,20 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
         s_in = x.new_ones([bsz])
 
         #z = z[:,None,:]
+        print("-------------------------------------------------------------")
 
         for i in range(self.sigmas.shape[0] - 1):
-            print("Diffusion step called", x.shape, z.shape)
+            print(self.sigmas[i])
             original["seqs"] = torch.cat([x, z], dim=1)
             original["seqs"] = self.model.transformer.add_position_embeddings(original["seqs"])
             sigma = self.sigmas[i] * s_in
             next_sigma = self.sigmas[i + 1] * s_in
             # denoise
-            print("> ",original["seqs"].shape)
             logits = self.denoise(original, torch.cat([torch.zeros_like(x),z],dim=1), sigma, inference_mode=inference_mode)[:, -(slen - 1):,:]
 
-            probs = F.softmax(logits, dim=-1)
+            probs = torch.softmax(logits, dim=-1)
             denoised = probs @ self.model.transformer.wte.weight
+            #denoised = probs
 
             print("z:", z.shape)
             print("logits:", logits.shape)
@@ -428,10 +441,11 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
             print("denoised:", denoised.shape)
             print("argmax:", torch.argmax(logits, dim=-1))
             # to d
-            d = (z - denoised) / sigma[:, None] # none is for the hidden_dim
+            d = (z - denoised) / sigma #[:, None] # none is for the hidden_dim
             dt = next_sigma - sigma
+            print(f"dt is {dt}")
             # euler step
-            euler_step = z + dt[:, None] * d # None is for the hidden dim
+            euler_step = z + dt*d#[:, None] * d # None is for the hidden dim
             z = euler_step
 
         min_sigma = self.sigmas[-1].item()
@@ -439,8 +453,11 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
         original["seqs"] = self.model.transformer.add_position_embeddings(original["seqs"])
         sigmas = torch.full((x.shape[0],), min_sigma, device=x_device, dtype=x.dtype)
         logits = self.denoise(original,  torch.cat([torch.zeros_like(x),z],dim=1), sigmas, inference_mode=inference_mode)[:, -(slen - 1):, :]
-        probs = F.softmax(logits, dim=-1)
-        return probs @ self.model.transformer.wte.weight# return logits
+        probs = torch.zeros(1,1,50257, device=x_device)
+        correct_ = torch.argmax(logits, dim=-1)[0,0].item()
+        print(correct_)
+        probs[0,0,correct_] = 1.0
+        return probs #@ self.model.transformer.wte.weight# return logits
 
 
     def generate(self, sentence, num_new_tokens, temperature=1.0):
@@ -475,10 +492,8 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
                 print("norm:", diff.norm(dim=-1).mean().item())
             old_logits = logits
 
-            sampling_logits = logits / temperature
-            next_token_id = torch.distributions.Categorical(
-                    logits=sampling_logits
-                    ).sample().detach().item()
+            next_token_id = torch.argmax(logits, dim=-1).item()
+            print(f"next_token_id: {next_token_id}")
 
             tokenized_words.append(next_token_id)
 
@@ -513,11 +528,11 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
             input_ = {
                 "seqs": original[None,...],
                 "original_mask": torch.tensor(
-                    [w_*[1]+(w_ - 1 + num_new_tokens)*[0]],
+                    [(w_ + num_new_tokens )*[1]+(w_ - 1 + num_new_tokens)*[0]],
                     device=original.device,
                 ),
                 "loss_mask": torch.tensor(
-                    [[1] + (w_ - 1)*[0]+ (w_ - 1 + num_new_tokens)*[1]],
+                    [(w_ + num_new_tokens)*[0]+ (w_ - 1 + num_new_tokens)*[1]],
                     device=original.device,
                 ),
             }
@@ -553,7 +568,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
 
         return tokenized_words
 
-    def sigma_sweep(self):
+    def sigma_sweep(self, sentence):
 
         sigmas = torch.arange(1.0, 80.0, 2.5)
 
@@ -564,24 +579,41 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
         print(tokenized_words)
 
         list_of_words = sentence.split(" ")
-
         original = torch.tensor(tokenized_words, device=model_device)
-        original = self.model.transformer.get_embeddings(original)
 
-        for sigma in range(sigmas):
+        # NOTE: hard code for now
+        block_idx = 3
+
+        
+
+        for sigma in sigmas:
+
+             inputs = self.generate_inputs(original, sigma=sigma, device=model_device)
+             masks = self.generate_input_masks(inputs["original"], inputs["noised"], device=model_device)
+
+             processed_batch = [(masks | inputs)]
+
+             collated_processed_batch = self.collate(processed_batch)
+
+             labels = collated_processed_batch["label"]
+             del collated_processed_batch["label"]
+
+             zt = collated_processed_batch["noise"]
+             del collated_processed_batch["noise"]
+
+             # rename keys here
+             collated_processed_batch["seqs"] = collated_processed_batch.pop("input")
+             logits = self.denoise(collated_processed_batch, zt, torch.tensor([sigma]), block_idx, inference_mode=False)
+
+             # ================ Debugging process =============================
+             # NOTE: the mask flattens
+
+             logits = logits[collated_processed_batch["loss_mask"].bool()] # should be [seq, hidden_dim]
+             predicted_token_ids = torch.argmax(logits, dim=-1)
+             # decoded = 
+             print(f"For sigma={sigma} : {predicted_token_ids.tolist()}  {tokenizer.decode(predicted_token_ids.tolist())}\n\n")
             
-            w_ = len(tokenized_words)
-            input_ = {
-                "seqs": original[None,...],
-                "original_mask": torch.tensor([w_*[1]+(w_ - 1)*[0]], device=original.device),
-                "loss_mask": torch.tensor([w_*[0]+(w_ - 1)*[1]], device=original.device),
-            }
 
-            logits = self.diffusion_step(input_, inference_mode=False)
-
-            print(torch.argmax(logits, dim=-1).shape)
-
-        pass
 
     def counterfactual_generate(self, sentence, temperature=1.0):
         tokenizer = get_encoder()

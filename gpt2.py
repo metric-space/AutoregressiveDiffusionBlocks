@@ -202,8 +202,8 @@ class Attention(nn.Module):
     # single not batched
     def derive_masks(self, original_mask, noise_mask, inference_mode=False):
 
-        print(original_mask)
-        print(noise_mask)
+        #print(original_mask)
+        #print(noise_mask)
 
         mask_dim_ =  original_mask.shape[-1]
         mask = original_mask.new_zeros(mask_dim_, mask_dim_)
@@ -215,7 +215,7 @@ class Attention(nn.Module):
             )
 
         i = int(original_mask.sum())
-        print(f"i IS {i}")
+        #print(f"i IS {i}")
         ni = int(noise_mask.sum())
 
         num_noisy = int(noise_mask.sum())
@@ -238,7 +238,7 @@ class Attention(nn.Module):
             mask[noisy_position, noisy_position] = True
 
         print("training mode mask")
-        print(mask)
+        #print(mask)
 
         return mask
 

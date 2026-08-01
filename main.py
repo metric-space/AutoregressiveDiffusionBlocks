@@ -85,7 +85,8 @@ def main(args: DictConfig) -> None:
         trainer.fit(model, data, ckpt_path=args.ckpt_path)
         #if data.test_key is not None:
         #    trainer.test(model, data.test_dataloader(), ckpt_path="best")
-        model.generate("pizza with fox ", 5)
+        # model.sigma_sweep("pizza with fox is the best") #, 5)
+        model.generate("pizza with", 5)
     else:
         assert args.ckpt_path is not None
         trainer.test(model, data, ckpt_path=args.ckpt_path)
