@@ -5,8 +5,8 @@ import torch
 
 def get_block_sigmas(
     num_layers,
-    sigma_min: float = 0.002,
-    sigma_max: float = 80.0,
+    sigma_min: float = 5,
+    sigma_max: float = 80,
     p_mean: float = -1.2,
     p_std: float = 1.2,
 ) -> list[float]:
@@ -22,8 +22,8 @@ def get_block_sigmas(
 
 def get_discrete_sigmas(
     num_steps,
-    sigma_min=0.002,
-    sigma_max=80.0,
+    sigma_min=5,
+    sigma_max=80,
     rho=7.0,
     p_mean=-1.2,
     p_std=1.2,

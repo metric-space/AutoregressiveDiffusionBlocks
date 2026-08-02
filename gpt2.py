@@ -222,9 +222,9 @@ class Attention(nn.Module):
 
         # steps:
         #mask[0:i,0] = True
-        #mask[:i, :i] = torch.tril(
-		#    torch.ones(i, i, dtype=torch.bool)
-		#)
+        mask[:i, :i] = torch.tril(
+		    torch.ones(i, i, dtype=torch.bool)
+		)
 
         mask[i:i+ni, :ni] = torch.tril(
             original_mask.new_ones(ni, ni)

@@ -79,6 +79,7 @@ def main(args: DictConfig) -> None:
         devices=args.devices,
         logger=logger,
         num_sanity_val_steps=0,
+        log_every_n_steps=4,
         # precision="bf16-mixed",
     )
     if args.stage == "train":

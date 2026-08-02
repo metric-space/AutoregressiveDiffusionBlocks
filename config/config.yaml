@@ -11,7 +11,7 @@ num_labels: null
 model_type: vit
 
 devices: 1
-num_epochs: 1000
+num_epochs: 50
 block_idx: 3
 
 batch_size: 128
@@ -40,9 +40,9 @@ debug: false
 postfix: "-rand-augment"
 
 # dblock
-num_blocks: 3
+num_blocks: 4
 gamma: 0.05
-num_inference_steps: null
+num_inference_steps: 3
 cfg_scale: 0.0
 class_dropout_prob: 0.0
 transition: null

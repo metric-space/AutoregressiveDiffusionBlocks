@@ -204,7 +204,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
         original = self.model.transformer.add_position_embeddings(original)
 
         noised = torch.tensor(original_seq[1:], device=device)
-        label  = torch.clone(noised)
+        label  = torch.cat([torch.tensor(original_seq, device=device),torch.clone(noised)],dim=0)
         noised = self.model.transformer.get_embeddings(noised)
 
         noise = sigma * torch.randn_like(noised)
@@ -331,7 +331,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
 
         print("Warning! batch dimension is toast here, come back here to correct after testing phase is over")
 
-        logits = logits[collated_processed_batch["loss_mask"].bool()] # should be [seq, hidden_dim]
+        logits = logits #[collated_processed_batch["loss_mask"].bool()] # should be [seq, hidden_dim]
 
         print(logits.shape)
 
@@ -443,7 +443,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
             # to d
             d = (z - denoised) / sigma #[:, None] # none is for the hidden_dim
             dt = next_sigma - sigma
-            print(f"dt is {dt}")
+            print(f"dt*d is {dt*d}")
             # euler step
             euler_step = z + dt*d#[:, None] * d # None is for the hidden dim
             z = euler_step
@@ -453,11 +453,8 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
         original["seqs"] = self.model.transformer.add_position_embeddings(original["seqs"])
         sigmas = torch.full((x.shape[0],), min_sigma, device=x_device, dtype=x.dtype)
         logits = self.denoise(original,  torch.cat([torch.zeros_like(x),z],dim=1), sigmas, inference_mode=inference_mode)[:, -(slen - 1):, :]
-        probs = torch.zeros(1,1,50257, device=x_device)
-        correct_ = torch.argmax(logits, dim=-1)[0,0].item()
-        print(correct_)
-        probs[0,0,correct_] = 1.0
-        return probs #@ self.model.transformer.wte.weight# return logits
+        probs = torch.softmax(logits, dim=-1)
+        return probs @ self.model.transformer.wte.weight# return logits
 
 
     def generate(self, sentence, num_new_tokens, temperature=1.0):
