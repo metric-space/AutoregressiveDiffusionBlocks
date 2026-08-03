@@ -1,6 +1,9 @@
 import copy
 import math
+import os
 import random
+import struct
+import zlib
 import numpy as np
 from scipy.stats import norm
 import torch
@@ -64,6 +67,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
             self.args.num_epochs = sum(epochs for _, epochs in self.transition)
             self.current_training_block, self.training_counter = self.transition[0]
             self.minimum_block_idx = min([k for k,_ in self.transition])
+        self._attention_viz_count = 0
 
     def on_fit_start(self):
         self.logger.watch(
@@ -72,6 +76,17 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
                 log_freq=10,
                 log_graph=False,
         )
+        if self._attention_viz_enabled():
+            root_dir = getattr(
+                self,
+                "attention_visualization_root_dir",
+                self.trainer.default_root_dir,
+            )
+            self._attention_viz_dir = os.path.join(
+                root_dir,
+                self.args.attention_visualization.get("output_dir", "attention_maps"),
+            )
+            os.makedirs(self._attention_viz_dir, exist_ok=True)
 
 
     def configure_model(self):
@@ -195,6 +210,151 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
 
     def get_model_kwargs(self, batch):
         return {}
+
+    def _attention_viz_enabled(self):
+        cfg = self.args.get("attention_visualization", None)
+        return bool(cfg is not None and cfg.get("enabled", False))
+
+    def _should_visualize_attention(self, step):
+        if not self._attention_viz_enabled() or step != "train":
+            return False
+        if getattr(self.trainer, "global_rank", 0) != 0:
+            return False
+        cfg = self.args.attention_visualization
+        max_batches = cfg.get("max_batches", None)
+        if max_batches is not None and self._attention_viz_count >= max_batches:
+            return False
+        every_n_steps = int(cfg.get("every_n_steps", 100))
+        return every_n_steps > 0 and self.global_step % every_n_steps == 0
+
+    @staticmethod
+    def _attention_head_image(attention):
+        attention = attention.float()
+        attention = attention - attention.min()
+        scale = attention.max().clamp_min(1e-8)
+        attention = (attention / scale * 255).byte().numpy()
+
+        red = attention
+        green = (attention.astype(np.float32) * 0.55).astype(np.uint8)
+        blue = 255 - attention
+        rgb = np.stack([red, green, blue], axis=-1)
+        return np.repeat(np.repeat(rgb, 12, axis=0), 12, axis=1)
+
+    @staticmethod
+    def _png_chunk(chunk_type, data):
+        chunk = chunk_type + data
+        return (
+            struct.pack(">I", len(data))
+            + chunk
+            + struct.pack(">I", zlib.crc32(chunk) & 0xFFFFFFFF)
+        )
+
+    @classmethod
+    def _write_png(cls, path, image):
+        height, width, _ = image.shape
+        raw = b"".join(
+            b"\x00" + np.ascontiguousarray(image[row]).tobytes()
+            for row in range(height)
+        )
+        with open(path, "wb") as handle:
+            handle.write(b"\x89PNG\r\n\x1a\n")
+            handle.write(
+                cls._png_chunk(
+                    b"IHDR",
+                    struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0),
+                )
+            )
+            handle.write(cls._png_chunk(b"IDAT", zlib.compress(raw)))
+            handle.write(cls._png_chunk(b"IEND", b""))
+
+    def _save_attention_layer_image(self, weights, layer_idx, step_dir, sample_idx, max_heads):
+        sample = weights[sample_idx]
+        num_heads = min(sample.shape[0], max_heads)
+        head_images = [self._attention_head_image(sample[head_idx]) for head_idx in range(num_heads)]
+        tile_h, tile_w, _ = head_images[0].shape
+        pad = 4
+        columns = min(4, num_heads)
+        rows = math.ceil(num_heads / columns)
+        canvas = np.full(
+            (
+                rows * tile_h + (rows + 1) * pad,
+                columns * tile_w + (columns + 1) * pad,
+                3,
+            ),
+            255,
+            dtype=np.uint8,
+        )
+        for head_idx, image in enumerate(head_images):
+            x = pad + (head_idx % columns) * (tile_w + pad)
+            y = pad + (head_idx // columns) * (tile_h + pad)
+            canvas[y : y + tile_h, x : x + tile_w] = image
+        path = os.path.join(step_dir, f"layer_{layer_idx:02d}.png")
+        self._write_png(path, canvas)
+        return path
+
+    def _log_attention_maps(self, block_idx):
+        maps = getattr(self.model, "last_attention_maps", [])
+        if not maps:
+            return
+
+        cfg = self.args.attention_visualization
+        save_local = bool(cfg.get("save_local", True))
+        log_to_wandb = bool(cfg.get("log_to_wandb", True))
+        if not save_local and not log_to_wandb:
+            return
+
+        sample_idx = int(cfg.get("sample_idx", 0))
+        max_heads = int(cfg.get("max_heads", 12))
+        max_layers = cfg.get("max_layers", None)
+        if max_layers is not None:
+            maps = maps[: int(max_layers)]
+
+        step_dir = os.path.join(self._attention_viz_dir, f"step_{self.global_step:08d}")
+        os.makedirs(step_dir, exist_ok=True)
+
+        logged_images = {}
+        for item in maps:
+            weights = item["weights"]
+            if sample_idx >= weights.shape[0]:
+                continue
+            if save_local:
+                torch.save(weights, os.path.join(step_dir, f"layer_{item['layer']:02d}.pt"))
+            path = self._save_attention_layer_image(
+                weights=weights,
+                layer_idx=item["layer"],
+                step_dir=step_dir,
+                sample_idx=sample_idx,
+                max_heads=max_heads,
+            )
+            if log_to_wandb:
+                logged_images[f"attention/block_{block_idx}/layer_{item['layer']}"] = path
+
+        if log_to_wandb and logged_images:
+            try:
+                import wandb
+
+                self.logger.experiment.log(
+                    {
+                        key: wandb.Image(path)
+                        for key, path in logged_images.items()
+                    },
+                    step=int(self.global_step),
+                )
+            except Exception as exc:
+                print(f"Attention visualization wandb logging failed: {exc}")
+
+        if not save_local:
+            for path in logged_images.values():
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            try:
+                os.rmdir(step_dir)
+            except OSError:
+                pass
+
+        self._attention_viz_count += 1
 
 
     def generate_inputs(self, original_seq, sigma=0.0, device="cpu"):
@@ -323,7 +483,14 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
         # rename keys here
         collated_processed_batch["seqs"] = collated_processed_batch.pop("input")
 
-        logits = self.denoise(collated_processed_batch, zt, sigmas, block_idx, inference_mode=False)
+        capture_attention = self._should_visualize_attention(step)
+        self.model.set_attention_capture(capture_attention)
+        try:
+            logits = self.denoise(collated_processed_batch, zt, sigmas, block_idx, inference_mode=False)
+        finally:
+            self.model.set_attention_capture(False)
+        if capture_attention:
+            self._log_attention_maps(block_idx)
 
         # ================ Debugging process =============================
 
@@ -453,8 +620,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
         original["seqs"] = self.model.transformer.add_position_embeddings(original["seqs"])
         sigmas = torch.full((x.shape[0],), min_sigma, device=x_device, dtype=x.dtype)
         logits = self.denoise(original,  torch.cat([torch.zeros_like(x),z],dim=1), sigmas, inference_mode=inference_mode)[:, -(slen - 1):, :]
-        probs = torch.softmax(logits, dim=-1)
-        return probs @ self.model.transformer.wte.weight# return logits
+        return logits
 
 
     def generate(self, sentence, num_new_tokens, temperature=1.0):

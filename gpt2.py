@@ -167,6 +167,8 @@ class Attention(nn.Module):
         self.scale = scale
         self.c_attn = Conv1D(n_state * 3, nx)
         self.c_proj = Conv1D(n_state, nx)
+        self.capture_attention = False
+        self.last_attention_weights = None
 
     def _attn(self, q, k, v, masks, inference_mode=False):
         w = torch.matmul(q, k)
@@ -178,6 +180,7 @@ class Attention(nn.Module):
         #print(b)
         w = w * b - 1e20 * (1 - b)
         w = nn.Softmax(dim=-1)(w)
+        self.last_attention_weights = w.detach().cpu() if self.capture_attention else None
         print("Attention weights")
         #print(w)
         if inference_mode:
@@ -222,9 +225,9 @@ class Attention(nn.Module):
 
         # steps:
         #mask[0:i,0] = True
-        mask[:i, :i] = torch.tril(
-		    torch.ones(i, i, dtype=torch.bool)
-		)
+        #mask[:i, :i] = torch.tril(
+		#    torch.ones(i, i, dtype=torch.bool)
+		#)
 
         mask[i:i+ni, :ni] = torch.tril(
             original_mask.new_ones(ni, ni)
@@ -328,6 +331,8 @@ class GPT2Model(nn.Module):
         self.adaLN_modulation = AdaLN(
                 config.cond_hidden_size, 2 * config.n_embd, bias=True
             )
+        self.capture_attention = False
+        self.last_attention_maps = []
 
     def set_embeddings_weights(self, model_embeddings_weights):
         embed_shape = model_embeddings_weights.shape
@@ -350,10 +355,14 @@ class GPT2Model(nn.Module):
 
     # NOTe: input
     def add_position_embeddings(self, inputs, offset=0):
-        # expected input shape is [B, S, Hidden_dim]
-        position_ids = torch.arange(offset, inputs.size(0) + offset, dtype=torch.long, device=inputs.device) # [seq]
-        #position_ids = position_ids.unsqueeze(-2).expand_as(inputs) # Note: this is to 
-        #position_ids = position_ids.view(-1, position_ids.size(-1))
+        seq_dim = 1 if inputs.ndim == 3 else 0
+        seq_len = inputs.size(seq_dim)
+        position_ids = torch.arange(
+            offset,
+            seq_len + offset,
+            dtype=torch.long,
+            device=inputs.device,
+        )
         position_embeds = self.wpe(position_ids)
         return position_embeds + inputs
 
@@ -380,11 +389,21 @@ class GPT2Model(nn.Module):
         #hidden_states = inputs_embeds + position_embeds + token_type_embeds
         hidden_states = embeds
         presents = []
+        self.last_attention_maps = []
         for layer_index, (block, layer_past) in enumerate(zip(self.h, past)):
             if layer_index not in layer_indices:
                 continue
+            block.attn.capture_attention = self.capture_attention
             hidden_states, present = block(hidden_states, conditioning, layer_past, inference_mode=inference_mode)
             presents.append(present)
+            if self.capture_attention and block.attn.last_attention_weights is not None:
+                self.last_attention_maps.append(
+                    {
+                        "layer": layer_index,
+                        "weights": block.attn.last_attention_weights,
+                    }
+                )
+            block.attn.capture_attention = False
 
         original = hidden_states 
         hidden_states = hidden_states["seqs"] 
@@ -449,6 +468,10 @@ class GPT2LMHeadModel(nn.Module):
         self.adaLN_modulation = AdaLN(
                 config.cond_hidden_size, 2 * config.n_embd, bias=True
             )
+        self.last_attention_maps = []
+
+    def set_attention_capture(self, enabled):
+        self.transformer.capture_attention = enabled
 
     def set_tied(self):
         """ Make sure we are sharing the embeddings
@@ -459,6 +482,7 @@ class GPT2LMHeadModel(nn.Module):
     def forward(self, embeds, timesteps, layer_indices, position_ids=None, token_type_ids=None, lm_labels=None, past=None, sigma_stuff=None, inference_mode=False):
         conditioning = F.silu(self.time_embedder(timesteps.to(embeds["seqs"].device)))
         outputs, presents = self.transformer(embeds, layer_indices, None, None, None, conditioning=conditioning, inference_mode=inference_mode)
+        self.last_attention_maps = self.transformer.last_attention_maps
         #hidden_states = torch.nn.utils.rnn.pad_sequence([x[y.bool()] for (x,y) in zip(outputs["seqs"],outputs["loss_mask"])], batch_first=True)
         #hidden_states = outputs["seqs"][outputs["loss_mask"].bool()]
         c_out, zt, c_skip = sigma_stuff

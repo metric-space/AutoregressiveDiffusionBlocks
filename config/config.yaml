@@ -39,6 +39,17 @@ ckpt_path: null
 debug: false
 postfix: "-rand-augment"
 
+attention_visualization:
+  enabled: false
+  save_local: true
+  log_to_wandb: true
+  output_dir: attention_maps
+  every_n_steps: 100
+  max_batches: null
+  max_layers: null
+  max_heads: 12
+  sample_idx: 0
+
 # dblock
 num_blocks: 4
 gamma: 0.05

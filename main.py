@@ -42,6 +42,7 @@ def main(args: DictConfig) -> None:
             nowname = nowname[1:]
     print("Experiment Name:", nowname)
     logdir = os.path.join("logs", nowname)
+    model.attention_visualization_root_dir = logdir
     logger = WandbLogger(
         project="diffblocks-tt",
         name=f"split-and-merge-44444",
