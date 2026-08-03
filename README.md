@@ -5,10 +5,9 @@
 
 ## Acknowledgement
 
-The implementation of GPT2-Transformer in [model.py](./model.py) is based on <Please insert url at some point> 
-We are grateful for their work.
+The implementation of GPT2-Transformer in [model.py](./model.py) is based on [@graycode's gpt2 implementation](https://github.com/graykode/gpt-2-Pytorch)
 
-## Citation
+AND
 
 ```bibtex
 @inproceedings{shing2026diffusionblocks,
@@ -19,3 +18,4 @@ We are grateful for their work.
   url       = {https://openreview.net/forum?id=pwVSmK71cS}
 }
 ```
+I am grateful for their work.
