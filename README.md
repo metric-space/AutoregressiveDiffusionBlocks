@@ -2,6 +2,11 @@
 
 🚧  UNDER CONSTRUCTION
 
+## 
+
+Attention mask diagram
+
+![Attention Masks](./resources/2026-08-04-010947_835x612_scrot.png)
 
 ## Acknowledgement
 
