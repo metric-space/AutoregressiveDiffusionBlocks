@@ -42,6 +42,7 @@ def main(args: DictConfig) -> None:
             nowname = nowname[1:]
     print("Experiment Name:", nowname)
     logdir = os.path.join("logs", nowname)
+    model.attention_visualization_root_dir = logdir
     logger = WandbLogger(
         project="diffblocks-tt",
         name=f"split-and-merge-44444",
@@ -79,13 +80,15 @@ def main(args: DictConfig) -> None:
         devices=args.devices,
         logger=logger,
         num_sanity_val_steps=0,
+        log_every_n_steps=4,
         # precision="bf16-mixed",
     )
     if args.stage == "train":
         trainer.fit(model, data, ckpt_path=args.ckpt_path)
         #if data.test_key is not None:
         #    trainer.test(model, data.test_dataloader(), ckpt_path="best")
-        model.generate("pizza with fox ", 5)
+        # model.sigma_sweep("pizza with fox is the best") #, 5)
+        model.generate("pizza with", 5)
     else:
         assert args.ckpt_path is not None
         trainer.test(model, data, ckpt_path=args.ckpt_path)
