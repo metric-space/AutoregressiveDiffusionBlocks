@@ -1,8 +1,7 @@
 # AutoregressiveDiffusionBlocks (Fork of DiffusionBlocks ICLR 2026)
 
-🚧  UNDER CONSTRUCTION, INFERENCE IS BROKEN AND STILL IS A WORK IN PROGRESS
+🚧  UNDER CONSTRUCTION
 
-```
 
 ## Acknowledgement
 
