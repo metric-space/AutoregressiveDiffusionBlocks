@@ -192,6 +192,12 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
                 for i in range(self.args.num_blocks)
             ]
         print(f"Layer indices: {self.layer_assignment[block_idx]}")
+
+        loss_mask = x["loss_mask"].to(dtype=x["seqs"].dtype).unsqueeze(-1)
+        c_in = c_in.to(dtype=x["seqs"].dtype)
+        print(f"DEBUG PRE: {x['seqs'].shape} {x['seqs'].dtype}")
+        x["seqs"] = (x["seqs"]*(1 - loss_mask)) + (c_in[:,None,None] * x["seqs"] * loss_mask)
+        print(f"DEBUG POST: {x['seqs'].shape} {x['seqs'].dtype}")
         outputs = self.model.forward(
                 x,
                 layer_indices=self.layer_assignment[block_idx],
