@@ -419,8 +419,6 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
     def shared_step(self, batch, step="train", return_metrics=False, **kwargs):
         model_device = next(self.model.parameters()).device
 
-        batch = 10*batch
-
         # NOTE: make masks here
         processed_batch = []
         labels = []
@@ -438,8 +436,6 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
             model_device
         )
 
-        zt = []
-
         # TODO: zip maybee better
         #
         for index, original_seq in enumerate(batch):
@@ -448,9 +444,6 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
              print(f"Input: {text_decoder.decode(original_seq)}")
 
              inputs = self.generate_inputs(original_seq, sigma=sigmas[index], device=model_device)
-
-             # NOTE: maybe we don't need this line
-             zt.append(inputs["noise"])
 
              masks = self.generate_input_masks(inputs["original"], inputs["noised"], device=model_device)
 
