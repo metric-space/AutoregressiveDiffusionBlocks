@@ -529,12 +529,14 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
         )
 
         print("loss shape is: ", loss.shape)
-        #loss = loss.reshape(-1, loss.size()[-1])
+        loss = loss.reshape(-1, loss.size()[-1])
         ce_loss = loss.mean()
         w = self.get_weights(sigmas)[:, None]
-        loss = loss.mean() # (loss * w).mean()
+        print(f"w shape is {w.shape}")
+        print(f"sigmas {sigmas}")
+        loss = (loss * w).mean()
 
-        print(f"LOSS STATEMENT {block_idx} {loss}")
+        #print(f"LOSS STATEMENT {block_idx} {loss}")
 
         loss_dict = {
             f"{step}/loss": loss,
@@ -616,7 +618,6 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
             # to d
             d = (z - denoised) / sigma #[:, None] # none is for the hidden_dim
             dt = next_sigma - sigma
-            print(f"dt*d is {dt*d}")
             # euler step
             euler_step = z + dt*d#[:, None] * d # None is for the hidden dim
             z = euler_step
@@ -825,7 +826,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
                 torch.tensor(tokenized_words, device=model_device)
             )
             w_ = len(tokenized_words)
-            print(w_)
+            # print(w_)
             input_ = {
                 "seqs": original,
                 "original_mask": torch.tensor([w_*[1]+w_*[0]], device=original.device),
