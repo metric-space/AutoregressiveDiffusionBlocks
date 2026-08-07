@@ -49,7 +49,7 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
         self.alternative = args.alternative
 
         self.transition = args.get("transition", None)
-        print(self.transition)
+        #print(self.transition)
         if self.transition is not None:
             for block_idx, _ in self.transition:
                 if not 0 <= block_idx < self.args.num_blocks:
@@ -191,13 +191,13 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
                 list(range(i * split_size, (i + 1) * split_size))
                 for i in range(self.args.num_blocks)
             ]
-        print(f"Layer indices: {self.layer_assignment[block_idx]}")
+        #print(f"Layer indices: {self.layer_assignment[block_idx]}")
 
         loss_mask = x["loss_mask"].to(dtype=x["seqs"].dtype).unsqueeze(-1)
         c_in = c_in.to(dtype=x["seqs"].dtype)
-        print(f"DEBUG PRE: {x['seqs'].shape} {x['seqs'].dtype}")
+        #print(f"DEBUG PRE: {x['seqs'].shape} {x['seqs'].dtype}")
         x["seqs"] = (x["seqs"]*(1 - loss_mask)) + (c_in[:,None,None] * x["seqs"] * loss_mask)
-        print(f"DEBUG POST: {x['seqs'].shape} {x['seqs'].dtype}")
+        #print(f"DEBUG POST: {x['seqs'].shape} {x['seqs'].dtype}")
         outputs = self.model.forward(
                 x,
                 layer_indices=self.layer_assignment[block_idx],
@@ -409,7 +409,6 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
         collated_processed_batch = {}
         for key_ in list_of_dicts[0].keys(): # come back here and reduce keys
             v_ = torch.nn.utils.rnn.pad_sequence([kv[key_] for kv in list_of_dicts], batch_first=True)
-            print(f"{key_ } {v_.shape}")
             #assert v_[0].ndim == 3
             collated_processed_batch[key_] = v_
 
@@ -441,8 +440,6 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
         for index, original_seq in enumerate(batch):
             # embedding
 
-             print(f"Input: {text_decoder.decode(original_seq)}")
-
              inputs = self.generate_inputs(original_seq, sigma=sigmas[index], device=model_device)
 
              masks = self.generate_input_masks(inputs["original"], inputs["noised"], device=model_device)
@@ -451,7 +448,6 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
 
         block_idx = self.estimate_target_layer(sigmas)
 
-        print(f"Processed batch: {processed_batch}")
         
         #if return_metrics:
         #    logits = self.diffusion_step(pixel_values)
@@ -495,11 +491,8 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
 
         # NOTE: the mask flattens
 
-        print("Warning! batch dimension is toast here, come back here to correct after testing phase is over")
 
         logits = logits #[collated_processed_batch["loss_mask"].bool()] # should be [seq, hidden_dim]
-
-        print(logits.shape)
 
         predicted_token_ids = torch.argmax(logits, dim=-1)
 
@@ -521,13 +514,18 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
                 reduction='none'
         )
 
-        print("loss shape is: ", loss.shape)
         loss = loss.reshape(-1, loss.size()[-1])
-        ce_loss = loss.mean()
         w = self.get_weights(sigmas)[:, None]
-        print(f"w shape is {w.shape}")
-        print(f"sigmas {sigmas}")
-        loss = (loss * w).mean()
+        loss = F.cross_entropy(
+                logits.reshape(-1, logits.size(-1)),
+                labels.reshape(-1),
+                reduction="none",
+                ).view_as(labels)
+
+        loss_mask = collated_processed_batch["loss_mask"].to(loss.dtype)
+        ce_loss = (loss * loss_mask).mean()
+
+        loss = (loss * loss_mask * w).mean()
 
         #print(f"LOSS STATEMENT {block_idx} {loss}")
 
@@ -588,7 +586,6 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
         s_in = x.new_ones([bsz])
 
         #z = z[:,None,:]
-        print("-------------------------------------------------------------")
 
         for i in range(self.sigmas.shape[0] - 1):
             print(self.sigmas[i])
@@ -603,11 +600,11 @@ class TransformerBlockModel(L.LightningModule): #ViTModel):
             denoised = probs @ self.model.transformer.wte.weight
             #denoised = probs
 
-            print("z:", z.shape)
-            print("logits:", logits.shape)
-            print("probs:", probs.shape)
-            print("denoised:", denoised.shape)
-            print("argmax:", torch.argmax(logits, dim=-1))
+            #print("z:", z.shape)
+            #print("logits:", logits.shape)
+            #print("probs:", probs.shape)
+            #print("denoised:", denoised.shape)
+            #print("argmax:", torch.argmax(logits, dim=-1))
             # to d
             d = (z - denoised) / sigma #[:, None] # none is for the hidden_dim
             dt = next_sigma - sigma
