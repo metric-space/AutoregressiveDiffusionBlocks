@@ -28,7 +28,7 @@ class TextData(L.LightningDataModule):
         super().__init__()
         self.tokenizer = get_encoder()
         self.pad_token = "<PAD>"
-        self.sample_texts = ["pizza with fox is the best"] #, "I came, I saw and I conquered", "Santa Claus is not real kids"]
+        self.sample_texts = ["pizza with fox is the best", "I came, I saw and I conquered", "Santa Claus is not real kids", "pizza with ghastly is the worst", "Santa Claus is an elf as per Artemis Fowl"]
 
 
     def train_dataloader(self):
@@ -54,7 +54,7 @@ class TextData(L.LightningDataModule):
         def collate_fn(batch):
             return batch
 
-        return DataLoader(results, batch_size=1, num_workers=1, pin_memory=True, drop_last=True, shuffle=True, collate_fn=collate_fn)
+        return DataLoader(results, batch_size=len(self.sample_texts), num_workers=1, pin_memory=True, drop_last=True, shuffle=True, collate_fn=collate_fn)
 
 
 class ImageDataModule(L.LightningDataModule):
